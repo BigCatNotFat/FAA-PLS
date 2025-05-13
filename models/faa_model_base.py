@@ -1,8 +1,9 @@
 import numpy as np
 from abc import ABC, abstractmethod
-
-
 class Faa_model_base(ABC):
+    def __init__(self, config):
+        self.config = config
+
     @abstractmethod
     def transform_antenna_positions(self):
         pass

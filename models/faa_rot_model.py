@@ -4,6 +4,7 @@ from .faa_model_base import Faa_model_base
 
 class faa_rot_model(Faa_model_base):
     def __init__(self, config):
+        super().__init__(config)
         self.config = config
 
     def transform_antenna_positions(self, antenna_positions_original, psi):
@@ -35,7 +36,7 @@ class faa_rot_model(Faa_model_base):
         
         return antenna_positions_rotated
 
-    def directional_channel_gain(self, antenna_positions_rotated):
+    def directional_channel_gain(self, antenna_positions_rotated, beta_paths):
         """
         计算定向天线的信道增益
         
@@ -50,7 +51,7 @@ class faa_rot_model(Faa_model_base):
         new_phi = self.config.phi_paths - math.radians(self.config.psi)
         
         # 向量化计算所有路径的方向性增益
-        A_dir = np.array([super()._calculate_GE(t, p, self.config.Kappa) 
+        A_dir = np.array([self._calculate_GE(t, p, self.config.Kappa) 
                           for t, p in zip(self.config.theta_paths, new_phi)])
         
         # 预分配信道向量
@@ -59,8 +60,8 @@ class faa_rot_model(Faa_model_base):
         # 计算每个天线的信道增益
         for n, antenna_pos in enumerate(antenna_positions_rotated):
             # 向量化计算所有路径的贡献
-            path_responses = np.array([self.config.beta_paths[i] * A_dir[i] * 
-                                    super()._calculate_path_phase_diff(
+            path_responses = np.array([beta_paths[i] * A_dir[i] * 
+                                    self._calculate_path_phase_diff(
                                           self.config.theta_paths[i], 
                                           self.config.phi_paths[i], 
                                           antenna_pos)
@@ -69,25 +70,24 @@ class faa_rot_model(Faa_model_base):
             # 求和并归一化
             h_vector_dir[n] = np.sqrt(1 / self.config.L) * np.sum(path_responses)
         
-        print("定向天线信道\n", h_vector_dir)
         return h_vector_dir
-    def omni_channel_gain(self, antenna_positions_rotated):
+    def omni_channel_gain(self, antenna_positions_rotated, beta_paths):
         A_onmi = np.ones(self.config.L, dtype=complex)
         # 预分配信道向量
         h_vector_onmi = np.zeros(len(antenna_positions_rotated), dtype=complex)
         
         # 计算每个天线的信道增益
-        for n, antenna_pos in enumerate(antenna_positions_rotated):
-            # 向量化计算所有路径的贡献
-            path_responses = np.array([self.config.beta_paths[i] * A_onmi[i] * 
-                                      super()._calculate_path_phase_diff(
-                                          self.config.theta_paths[i], 
-                                          self.config.phi_paths[i], 
-                                          antenna_pos)
-                                      for i in range(self.config.L)])
+        for n in range(len(antenna_positions_rotated)):
+            antenna_pos = antenna_positions_rotated[n]
+            # 使用ndarray向量化计算所有路径的贡献
+            phase_diffs = np.array([self._calculate_path_phase_diff(
+                                    self.config.theta_paths[i], 
+                                    self.config.phi_paths[i], 
+                                    antenna_pos) for i in range(self.config.L)])
+            
+            path_responses = beta_paths * A_onmi * phase_diffs
             
             # 求和并归一化
             h_vector_onmi[n] = np.sqrt(1 / self.config.L) * np.sum(path_responses)
         
-        print("全向天线信道\n", h_vector_onmi)
         return h_vector_onmi
