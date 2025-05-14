@@ -2,6 +2,9 @@ import numpy as np
 import math
 from models.faa_rot_model import faa_rot_model
 from config.config import Config
+import logs.logger as logger
+from optimizers.opt import Optimizer
+
 
 class Faa_pls:
     def __init__(self, config, model):
@@ -33,6 +36,7 @@ class Faa_pls:
         self.__antenna_positions_original = []
         # 变换后的天线位置坐标
         self.__antenna_positions_transform = []
+        self.__sigma_sq = config.sigma_sq
         # 初始化波束赋形向量，功率均匀分布在所有天线上
         self.__w = np.ones(self.__N_total) * np.sqrt(self.__P_max / self.__N_total)
         self.model = model
@@ -40,13 +44,9 @@ class Faa_pls:
         self.channel_gain_omni_bob = []
         self.channel_gain_directional_eve = []
         self.channel_gain_omni_eve = []
-        # ## 生成响应系数sigma，g_0表示参考距离1 m处平均信道功率增益的期望值，d_k表示距离，loss_exp表示路径损耗因子
-        # g_0 = 10 ** (-40 / 10)
-        # d_k = 100
-        # loss_exp = 2
-        # sigma_real = (g_0 / (d_k ** loss_exp)) / L
-        # print(sigma_real)
-        # beta_paths = np.sqrt(sigma_real / 2) * (np.random.randn(L) + 1j * np.random.randn(L))
+        
+
+
     def generate_antenna_original_positions(self):
         #生成天线坐标
         #生成原始天线坐标，在未旋转前，x=0，z轴为中间位置
@@ -67,40 +67,48 @@ class Faa_pls:
             x_grid.flatten(), y_grid.flatten(), z_grid.flatten()
         ))
         
-        print("【原始】天线坐标 (未旋转):")
+        logger.info("【原始】天线坐标 (未旋转):")
         for i, (x0, y0, z0) in enumerate(self.__antenna_positions_original, start=1):
-            print(f"  天线单元 {i}: (x, y, z) = ({x0:.3f}, {y0:.3f}, {z0:.3f})")
+            logger.info(f"  天线单元 {i}: (x, y, z) = ({x0:.3f}, {y0:.3f}, {z0:.3f})")
     def transform_antenna_positions(self, degree):
 
         #生成旋转后的天线坐标
         self.__antenna_positions_transform = self.model.transform_antenna_positions(self.__antenna_positions_original, degree)
-        print("【旋转后】天线坐标 (绕 z 轴旋转 ψ):")
+        logger.info("【旋转后】天线坐标 (绕 z 轴旋转 ψ):")
         for i, (x0, y0, z0) in enumerate(self.__antenna_positions_transform, start=1):
-            print(f"  天线单元 {i}: (x, y, z) = ({x0:.3f}, {y0:.3f}, {z0:.3f})")
+            logger.info(f"  天线单元 {i}: (x, y, z) = ({x0:.3f}, {y0:.3f}, {z0:.3f})")
     def generate_channel_Bob(self):
         self.channel_gain_directional_bob  = self.model.directional_channel_gain(self.__antenna_positions_transform, self.config.beta_paths_bob)
         self.channel_gain_omni_bob = self.model.omni_channel_gain(self.__antenna_positions_transform, self.config.beta_paths_bob)
-        print("Bob定向天线信道\n", self.channel_gain_directional_bob)
-        print("Bob全向天线信道\n", self.channel_gain_omni_bob)
+        logger.info("Bob定向天线信道", self.channel_gain_directional_bob)
+        logger.info("Bob全向天线信道", self.channel_gain_omni_bob)
     def generate_channel_Eve(self):
         self.channel_gain_directional_eve = self.model.directional_channel_gain(self.__antenna_positions_transform, self.config.beta_paths_eve)
         self.channel_gain_omni_eve = self.model.omni_channel_gain(self.__antenna_positions_transform, self.config.beta_paths_eve)
-        print("Eve定向天线信道\n", self.channel_gain_directional_eve)
-        print("Eve全向天线信道\n", self.channel_gain_omni_eve)
+        logger.info("Eve定向天线信道", self.channel_gain_directional_eve)
+        logger.info("Eve全向天线信道", self.channel_gain_omni_eve)
     def solve(self):
-        pass
+        optimizer = Optimizer()
+        self.transform_antenna_positions(30)#传入psi参数
+        self.generate_channel_Bob()
+        self.generate_channel_Eve()
+        self.__w = optimizer.optimize_beamformer_fixed_psi(self.channel_gain_directional_bob, self.channel_gain_directional_eve, self.__P_max, self.__sigma_sq)
+        logger.info("1波束赋形向量", self.__w)
+        self.transform_antenna_positions(30)#传入psi参数
+        self.generate_channel_Bob()
+        self.generate_channel_Eve()
+        self.__w = optimizer.optimize_beamformer_fixed_psi(self.channel_gain_directional_bob, self.channel_gain_directional_eve, self.__P_max, self.__sigma_sq)
+        logger.info("2波束赋形向量", self.__w)
 
 
 def main():
     #初始化配置
     config = Config()
+    logger.init_logger(config)
     rot_model = faa_rot_model(config)
     faa_rot = Faa_pls(config, rot_model)
     faa_rot.generate_antenna_original_positions()
-    faa_rot.transform_antenna_positions(30)#传入psi参数
-    faa_rot.generate_channel_Bob()
-    faa_rot.generate_channel_Eve()
-
+    faa_rot.solve()
 
 if __name__ == "__main__":
     main()
