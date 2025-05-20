@@ -3,10 +3,10 @@ import scipy.linalg
 import logs.logger as logger
 
 class Optimizer:
-    def __init__(self) -> None:
-        pass
+    def __init__(self, config) -> None:
+        self.config = config
+
     def optimize_beamformer_fixed_psi(self, h_B, h_E, P_max, sigma_sq): 
-        logger.info("h_B和h_E必须具有相同的维度(N_antennas)")
         """
         优化固定阵列形状参数psi下的发射波束成形向量w。
         这对应于论文第III-A节中的子问题求解。
@@ -92,4 +92,74 @@ class Optimizer:
         v_max_normalized = v_max_dominant / norm_v_max
         w_star = np.sqrt(P_max) * v_max_normalized
         return w_star
+    
 
+    def optimize_psi_fixed_beam(self, 
+                                    current_psi_degrees_initial: float, 
+                                    w_fixed: np.ndarray, 
+                                    gradient_F_psi: np.ndarray,
+                                    t:int
+                                   # func(psi_degrees, w_fixed) -> gradient_radians
+                                ):
+            """
+            Optimizes psi (in degrees) for a fixed beamforming vector w_fixed using Adam.
+            The objective is to MAXIMIZE F(psi) = (sigma^2 + S_B(psi)) / (sigma^2 + S_E(psi)).
+            Adam is a minimizer, so we minimize -F(psi).
+            The gradient_calculator_func must return dF/d(psi_radians).
+
+            Args:
+                current_psi_degrees_initial (float): Initial guess for psi in degrees.
+                w_fixed (np.ndarray): The fixed beamforming vector, shape (N,).
+                gradient_calculator_func (callable): A function that takes (psi_degrees, w_fixed_array)
+                                                    and returns the gradient dF/d(psi_radians).
+
+            Returns:
+                float: Optimized psi in degrees.
+            """
+            psi_degrees = float(current_psi_degrees_initial) # Ensure it's a float
+            
+            m_psi = 0.0  # First moment
+            v_psi = 0.0  # Second moment (uncentered variance)
+            
+            # Adam hyperparameters from config
+            lr = self.config.adam_lr_psi
+            beta1 = self.config.adam_beta1_psi
+            beta2 = self.config.adam_beta2_psi
+            epsilon = self.config.adam_epsilon_psi
+            num_iterations = self.config.psi_opt_iterations
+
+                # 1. Calculate gradient dF/d(psi_radians) using the callback
+                # The callback handles antenna transforms, channel calculations for the current_psi_degrees
+            if np.isnan(gradient_F_psi):
+                    logger.warning(f"Optimizer: Gradient is NaN. Stopping psi optimization early.")
+                    
+                
+                # 2. Convert gradient for Adam step:
+                # We want to MAXIMIZE F(psi). Adam MINIMIZES Loss(psi).
+                # So, Loss(psi) = -F(psi).
+                # d(Loss)/d(psi_degrees) = d(-F)/d(psi_radians) * d(psi_radians)/d(psi_degrees)
+                #                        = - (dF/d(psi_radians)) * (pi / 180.0)
+            gradient_for_adam_update = -gradient_F_psi * (np.pi / 180.0)
+
+                # 3. Adam update steps
+            m_psi = beta1 * m_psi + (1 - beta1) * gradient_for_adam_update
+            v_psi = beta2 * v_psi + (1 - beta2) * (gradient_for_adam_update ** 2)
+                
+                # Bias correction
+            m_hat_psi = m_psi / (1 - beta1 ** t)
+            v_hat_psi = v_psi / (1 - beta2 ** t)
+                
+                # Parameter update (Adam subtracts the scaled gradient)
+            update_step_degrees = lr * m_hat_psi / (np.sqrt(v_hat_psi) + epsilon)
+            psi_degrees -= update_step_degrees
+
+                # Normalize psi to [0, 360) range, or a more physically relevant range like [0, 180)
+                # For UPA, rotation from 0 to 180 degrees often covers all unique orientations.
+                # Let's use [0, 180) for now. Consider if problem implies wider range.
+                # Given G_E has cos(phi_eff)^kappa, if kappa is even, (psi) and (psi+180) might be related.
+                # For now, [0, 360) is safe.
+            psi_degrees = psi_degrees % 360.0
+                # If specific range e.g. [0, 90] is desired, clipping or modulo to that range would be here.
+                # self.__psi_degrees = np.clip(self.__psi_degrees, 0, 90)
+            logger.info(f"Optimizer: Finished Psi optimization. Final psi: {psi_degrees:.2f} deg.")
+            return psi_degrees
